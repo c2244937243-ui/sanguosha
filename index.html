@@ -1,467 +1,386 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Shield, Sword, Heart, Zap, User, Cpu, Sparkles, RefreshCw, MessageSquare, Target, XCircle, Flame, ScrollText, BrainCircuit, ChevronRight } from 'lucide-react';
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三国杀：激战</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel (用于在浏览器中解析 JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide 图标库 -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Serif SC', serif; background-color: #0c0a09; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        /* 针对移动端优化触摸区域 */
+        button, .cursor-pointer { touch-action: manipulation; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
 
-// --- 游戏常数与权重配置 ---
-const CARD_CONFIG = [
-  { name: '杀', type: 'basic', color: 'red', key: 'sha', desc: '造成1点伤害', weight: 15 }, 
-  { name: '闪', type: 'basic', color: 'blue', key: 'shan', desc: '抵消一张杀', weight: 5 },  
-  { name: '桃', type: 'basic', color: 'pink', key: 'tao', desc: '回复1点体力', weight: 4 },
-  { name: '顺手牵羊', type: 'trick', color: 'yellow', key: 'shun', desc: '夺取对手一张牌', weight: 4 },
-  { name: '过河拆桥', type: 'trick', color: 'gray', key: 'chai', desc: '弃置对手一张牌', weight: 3 },
-  { name: '决斗', type: 'trick', color: 'red', key: 'juedou', desc: '与对手轮流出杀', weight: 3 },
-];
+    <script type="text/babel">
+        // 解构 React 钩子
+        const { useState, useEffect, useCallback, useRef } = React;
 
-const WEIGHTED_POOL = [];
-CARD_CONFIG.forEach(card => {
-  for (let i = 0; i < card.weight; i++) {
-    WEIGHTED_POOL.push(card);
-  }
-});
+        // 图标组件适配器
+        const LucideIcon = ({ name, size = 24, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    window.lucide.createIcons({
+                        attrs: {
+                            class: className,
+                            width: size,
+                            height: size
+                        },
+                        nameAttr: 'data-lucide'
+                    });
+                }
+            }, [name, size, className]);
+            return <i data-lucide={name} ref={iconRef} className={className}></i>;
+        };
 
-const HEROES = [
-  { id: 0, name: '刘备', maxHp: 4, skill: '仁德', color: 'bg-green-900' },
-  { id: 1, name: '曹操', maxHp: 4, skill: '奸雄', color: 'bg-blue-900' },
-  { id: 2, name: '孙权', maxHp: 4, skill: '制衡', color: 'bg-red-900' },
-  { id: 3, name: '袁绍', maxHp: 4, skill: '乱击', color: 'bg-yellow-900' },
-];
+        // --- 游戏配置数据 ---
+        const CARD_CONFIG = [
+            { name: '杀', type: '基本牌', color: 'red', key: 'sha', desc: '造成1点伤害', weight: 15, icon: 'sword' }, 
+            { name: '闪', type: '基本牌', color: 'blue', key: 'shan', desc: '抵消一张杀', weight: 8, icon: 'shield' },  
+            { name: '桃', type: '基本牌', color: 'pink', key: 'tao', desc: '回复1点体力', weight: 5, icon: 'heart' },
+            { name: '顺手牵羊', type: '锦囊牌', color: 'yellow', key: 'shun', desc: '夺取对手一张牌', weight: 4, icon: 'zap' },
+            { name: '过河拆桥', type: '锦囊牌', color: 'gray', key: 'chai', desc: '弃置对手一张牌', weight: 3, icon: 'x-circle' },
+            { name: '决斗', type: '锦囊牌', color: 'red', key: 'juedou', desc: '与对手轮流出杀', weight: 3, icon: 'flame' },
+        ];
 
-// --- API 配置 ---
-const apiKey = ""; 
-const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
-
-const App = () => {
-  const [gameState, setGameState] = useState('menu'); 
-  const [players, setPlayers] = useState([]);
-  const [turnIdx, setTurnIdx] = useState(0);
-  const [logs, setLogs] = useState(["节奏加快，战火重燃！"]);
-  const [selectedCardIdx, setSelectedCardIdx] = useState(null);
-  const [isSelectingTarget, setIsSelectingTarget] = useState(false);
-  const [pendingAction, setPendingAction] = useState(null);
-  
-  // AI 增强功能状态
-  const [aiAdvice, setAiAdvice] = useState("");
-  const [isAiThinking, setIsAiThinking] = useState(false);
-  const [deathPoem, setDeathPoem] = useState("");
-
-  const addLog = (msg) => setLogs(prev => [msg, ...prev].slice(0, 8));
-
-  // --- Gemini API 调用函数 ---
-  const callGemini = async (prompt, systemInstruction = "你是一位精通三国战法的冷酷军师。") => {
-    let delay = 1000;
-    for (let i = 0; i < 5; i++) {
-      try {
-        const response = await fetch(`${BASE_URL}?key=${apiKey}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            systemInstruction: { parts: [{ text: systemInstruction }] }
-          })
+        const WEIGHTED_POOL = [];
+        CARD_CONFIG.forEach(card => {
+            for (let i = 0; i < card.weight; i++) {
+                WEIGHTED_POOL.push(card);
+            }
         });
-        if (!response.ok) throw new Error("API Limit");
-        const data = await response.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text;
-      } catch (error) {
-        if (i === 4) throw error;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-  };
 
-  const getAiAdvice = async () => {
-    if (isAiThinking || turnIdx !== 0) return;
-    setIsAiThinking(true);
-    setAiAdvice("军师正在夜观星象...");
-    
-    const me = players[0];
-    const enemies = players.slice(1).map(p => `${p.name}(HP:${p.hp},牌:${p.hand.length})`).join(', ');
-    const myHand = me.hand.map(c => c.name).join(', ');
-    
-    const prompt = `当前我的英雄是${me.hero.name}，体力${me.hp}/${me.maxHp}。我的手牌有：[${myHand}]。场上对手情况：${enemies}。请给我一条极其简短的古风策略建议（15字以内）。`;
-    
-    try {
-      const advice = await callGemini(prompt);
-      setAiAdvice(advice);
-    } catch (e) {
-      setAiAdvice("天机不可泄露，且凭本心。");
-    } finally {
-      setIsAiThinking(false);
-    }
-  };
+        const HEROES = [
+            { id: 0, name: '刘备', maxHp: 4, skill: '仁德', color: 'bg-green-900' },
+            { id: 1, name: '曹操', maxHp: 4, skill: '奸雄', color: 'bg-blue-900' },
+            { id: 2, name: '孙权', maxHp: 4, skill: '制衡', color: 'bg-red-900' },
+            { id: 3, name: '袁绍', maxHp: 4, skill: '乱击', color: 'bg-yellow-900' },
+        ];
 
-  const generateDeathPoem = async (victimName) => {
-    const prompt = `武将【${victimName}】在激烈的乱世纷争中阵亡了。请写一句充满硝烟感的诗词来祭奠或描述此刻的战局（15字以内）。`;
-    try {
-      const poem = await callGemini(prompt, "你是一位豪放派诗人。");
-      setDeathPoem(poem);
-      setTimeout(() => setDeathPoem(""), 6000); 
-    } catch (e) {
-      console.error("Poem failed");
-    }
-  };
+        const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent";
+        const apiKey = ""; // 运行时环境会自动注入
 
-  const getRandomCard = () => {
-    const card = WEIGHTED_POOL[Math.floor(Math.random() * WEIGHTED_POOL.length)];
-    return { ...card, uid: Math.random().toString(36).substr(2, 9) };
-  };
+        const App = () => {
+            const [gameState, setGameState] = useState('menu'); 
+            const [players, setPlayers] = useState([]);
+            const [turnIdx, setTurnIdx] = useState(0);
+            const [logs, setLogs] = useState(["节奏加快，战火重燃！"]);
+            const [selectedCardIdx, setSelectedCardIdx] = useState(null);
+            const [isSelectingTarget, setIsSelectingTarget] = useState(false);
+            const [pendingAction, setPendingAction] = useState(null);
+            const [aiAdvice, setAiAdvice] = useState("");
+            const [isAiThinking, setIsAiThinking] = useState(false);
+            const [deathPoem, setDeathPoem] = useState("");
 
-  const drawCards = (pIdx, count) => {
-    setPlayers(prev => {
-      const next = [...prev];
-      if (!next[pIdx] || next[pIdx].hp <= 0) return prev;
-      const newCards = Array(count).fill(0).map(getRandomCard);
-      next[pIdx].hand = [...next[pIdx].hand, ...newCards];
-      return next;
-    });
-  };
+            const addLog = (msg) => setLogs(prev => [msg, ...prev].slice(0, 8));
 
-  const startGame = (heroIdx) => {
-    const initPlayers = [
-      { id: 0, name: '你', hero: HEROES[heroIdx], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: false },
-      { id: 1, name: '左路先锋', hero: HEROES[1], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
-      { id: 2, name: '中军大将', hero: HEROES[2], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
-      { id: 3, name: '右翼统领', hero: HEROES[3], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
-    ];
-    setPlayers(initPlayers);
-    setGameState('playing');
-    setTurnIdx(0);
-    setAiAdvice("");
-    drawCards(0, 2); 
-    addLog("你的回合，杀意已决。");
-  };
+            // Gemini API 调用
+            const callGemini = async (prompt, systemInstruction = "你是一位精通三国战法的冷酷军师。") => {
+                let delay = 1000;
+                for (let i = 0; i < 5; i++) {
+                    try {
+                        const response = await fetch(`${BASE_URL}?key=${apiKey}`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                contents: [{ parts: [{ text: prompt }] }],
+                                systemInstruction: { parts: [{ text: systemInstruction }] }
+                            })
+                        });
+                        if (!response.ok) throw new Error("API Error");
+                        const data = await response.json();
+                        return data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    } catch (error) {
+                        if (i === 4) throw error;
+                        await new Promise(res => setTimeout(res, delay));
+                        delay *= 2;
+                    }
+                }
+            };
 
-  const nextTurn = useCallback(() => {
-    setTurnIdx(prev => {
-      let next = (prev + 1) % 4;
-      let attempts = 0;
-      while (players[next]?.hp <= 0 && attempts < 4) {
-        next = (next + 1) % 4;
-        attempts++;
-      }
-      if (players[next]?.hp > 0) {
-        addLog(`${players[next].name} 的回合开始`);
-        drawCards(next, 2);
-        return next;
-      }
-      return prev;
-    });
-    setSelectedCardIdx(null);
-    setIsSelectingTarget(false);
-    setPendingAction(null);
-    setAiAdvice("");
-  }, [players]);
+            const getRandomCard = () => {
+                const card = WEIGHTED_POOL[Math.floor(Math.random() * WEIGHTED_POOL.length)];
+                return { ...card, uid: Math.random().toString(36).substr(2, 9) };
+            };
 
-  const resolveFinalEffect = (action, counterCardIdx = null) => {
-    const { type, source, target } = action;
-    const newPlayers = [...players];
-    const sP = newPlayers[source];
-    const tP = newPlayers[target];
+            const drawCards = (pIdx, count) => {
+                setPlayers(prev => {
+                    const next = [...prev];
+                    if (!next[pIdx] || next[pIdx].hp <= 0) return prev;
+                    const newCards = Array(count).fill(0).map(getRandomCard);
+                    next[pIdx].hand = [...next[pIdx].hand, ...newCards];
+                    return next;
+                });
+            };
 
-    if (counterCardIdx !== null) {
-      addLog(`${tP.name} 打出【闪】化解攻击。`);
-      tP.hand.splice(counterCardIdx, 1);
-    } else {
-      switch(type) {
-        case 'sha':
-        case 'juedou':
-          tP.hp = Math.max(0, tP.hp - 1);
-          addLog(`${tP.name} 受到1点伤害！`);
-          if (tP.hp === 0) generateDeathPoem(tP.name);
-          break;
-        case 'shun':
-          if (tP.hand.length > 0) {
-            const card = tP.hand.splice(Math.floor(Math.random() * tP.hand.length), 1)[0];
-            sP.hand.push(card);
-            addLog(`${sP.name} 顺走了 ${tP.name} 的牌。`);
-          }
-          break;
-        case 'chai':
-          if (tP.hand.length > 0) {
-            tP.hand.splice(Math.floor(Math.random() * tP.hand.length), 1);
-            addLog(`${sP.name} 拆掉了 ${tP.name} 的牌。`);
-          }
-          break;
-        case 'tao':
-          sP.hp = Math.min(sP.maxHp, sP.hp + 1);
-          addLog(`${sP.name} 恢复了体力。`);
-          break;
-      }
-    }
+            const startGame = (heroIdx) => {
+                const initPlayers = [
+                    { id: 0, name: '你', hero: HEROES[heroIdx], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: false },
+                    { id: 1, name: '左路先锋', hero: HEROES[1], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
+                    { id: 2, name: '中军大将', hero: HEROES[2], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
+                    { id: 3, name: '右翼统领', hero: HEROES[3], hp: 4, maxHp: 4, hand: Array(4).fill(0).map(getRandomCard), isAi: true },
+                ];
+                setPlayers(initPlayers);
+                setGameState('playing');
+                setTurnIdx(0);
+                drawCards(0, 2);
+                addLog("你的回合，战事开启。");
+            };
 
-    setPlayers(newPlayers);
-    setPendingAction(null);
-    if (turnIdx !== 0 && sP.isAi) setTimeout(nextTurn, 800);
-  };
+            const nextTurn = useCallback(() => {
+                setTurnIdx(prev => {
+                    let next = (prev + 1) % 4;
+                    let attempts = 0;
+                    while (players[next]?.hp <= 0 && attempts < 4) {
+                        next = (next + 1) % 4;
+                        attempts++;
+                    }
+                    if (players[next]?.hp > 0) {
+                        addLog(`${players[next].name} 的回合开始`);
+                        drawCards(next, 2);
+                        return next;
+                    }
+                    return prev;
+                });
+                setSelectedCardIdx(null);
+                setIsSelectingTarget(false);
+                setPendingAction(null);
+                setAiAdvice("");
+            }, [players]);
 
-  const onCardClick = (idx) => {
-    if (turnIdx !== 0 || pendingAction) return;
-    const card = players[0].hand[idx];
-    
-    if (card.key === 'tao') {
-      if (players[0].hp >= players[0].maxHp) return;
-      resolveFinalEffect({ type: 'tao', source: 0, target: 0 });
-      setPlayers(prev => {
-        const next = [...prev];
-        next[0].hand.splice(idx, 1);
-        return next;
-      });
-    } else {
-      setSelectedCardIdx(idx);
-      setIsSelectingTarget(true);
-    }
-  };
+            const resolveEffect = (action, counterIdx = null) => {
+                const { type, source, target } = action;
+                const newPlayers = [...players];
+                const sP = newPlayers[source];
+                const tP = newPlayers[target];
 
-  const onSelectTarget = (tIdx) => {
-    if (!isSelectingTarget || tIdx === 0 || players[tIdx].hp <= 0) return;
-    const card = players[0].hand[selectedCardIdx];
-    const action = { type: card.key, source: 0, target: tIdx, card };
-    const newPlayers = [...players];
-    newPlayers[0].hand.splice(selectedCardIdx, 1);
-    setPlayers(newPlayers);
-    if (['sha', 'juedou'].includes(card.key)) {
-      setPendingAction(action);
-      setTimeout(() => {
-        const targetPlayer = players[tIdx];
-        const shanIdx = targetPlayer.hand.findIndex(c => c.key === 'shan');
-        if (shanIdx !== -1) resolveFinalEffect(action, shanIdx);
-        else resolveFinalEffect(action);
-      }, 800);
-    } else {
-      resolveFinalEffect(action);
-    }
-    setIsSelectingTarget(false);
-    setSelectedCardIdx(null);
-  };
+                if (counterIdx !== null) {
+                    addLog(`${tP.name} 打出【闪】化解。`);
+                    tP.hand.splice(counterIdx, 1);
+                } else {
+                    if (type === 'sha' || type === 'juedou') {
+                        tP.hp = Math.max(0, tP.hp - 1);
+                        addLog(`${tP.name} 受到1点伤害！`);
+                    } else if (type === 'tao') {
+                        sP.hp = Math.min(sP.maxHp, sP.hp + 1);
+                        addLog(`${sP.name} 恢复了体力。`);
+                    } else if (type === 'shun' && tP.hand.length > 0) {
+                        const card = tP.hand.splice(Math.floor(Math.random()*tP.hand.length),1)[0];
+                        sP.hand.push(card);
+                        addLog(`${sP.name} 顺走了一张牌。`);
+                    } else if (type === 'chai' && tP.hand.length > 0) {
+                        tP.hand.splice(Math.floor(Math.random()*tP.hand.length),1);
+                        addLog(`${sP.name} 拆掉了一张牌。`);
+                    }
+                }
+                setPlayers(newPlayers);
+                setPendingAction(null);
+                if (turnIdx !== 0) setTimeout(nextTurn, 800);
+            };
 
-  useEffect(() => {
-    if (gameState === 'playing' && turnIdx !== 0 && !pendingAction) {
-      const aiTimer = setTimeout(() => {
-        const me = players[turnIdx];
-        if (!me || me.hp <= 0) { nextTurn(); return; }
-        const shaIdx = me.hand.findIndex(c => c.key === 'sha');
-        const taoIdx = me.hand.findIndex(c => c.key === 'tao');
-        let targetIdx = 0;
-        let minHp = 99;
-        players.forEach((p, idx) => { if (idx !== turnIdx && p.hp > 0 && p.hp < minHp) { targetIdx = idx; minHp = p.hp; }});
-        if (me.hp < 2 && taoIdx !== -1) {
-          resolveFinalEffect({ type: 'tao', source: turnIdx, target: turnIdx });
-          setPlayers(p => { const n=[...p]; n[turnIdx].hand.splice(taoIdx,1); return n; });
-        } else if (shaIdx !== -1) {
-          const action = { type: 'sha', source: turnIdx, target: targetIdx };
-          setPlayers(p => { const n=[...p]; n[turnIdx].hand.splice(shaIdx,1); return n; });
-          setPendingAction(action);
-        } else {
-          nextTurn();
-        }
-      }, 1000);
-      return () => clearTimeout(aiTimer);
-    }
-  }, [turnIdx, pendingAction, gameState, players, nextTurn]);
+            const onCardClick = (idx) => {
+                if (turnIdx !== 0 || pendingAction) return;
+                const card = players[0].hand[idx];
+                if (card.key === 'tao') {
+                    if (players[0].hp < players[0].maxHp) {
+                        resolveEffect({ type: 'tao', source: 0, target: 0 });
+                        setPlayers(p => { const n=[...p]; n[0].hand.splice(idx,1); return n; });
+                    }
+                } else {
+                    setSelectedCardIdx(idx);
+                    setIsSelectingTarget(true);
+                }
+            };
 
-  if (gameState === 'menu') {
-    return (
-      <div className="h-screen bg-stone-950 flex flex-col items-center justify-center text-white p-4">
-        <div className="flex items-center gap-4 mb-8 scale-110">
-            <Flame className="text-red-600 animate-pulse" size={64} />
-            <h1 className="text-6xl font-black text-yellow-600 italic tracking-tighter shadow-xl">三国杀：激战</h1>
-        </div>
-        <div className="grid grid-cols-2 gap-4 max-w-lg w-full">
-          {HEROES.map((h, i) => (
-            <button key={h.id} onClick={() => startGame(i)} className={`${h.color} p-6 rounded-xl border-2 border-white/10 hover:border-yellow-500 hover:scale-105 transition-all shadow-lg text-left`}>
-              <div className="text-2xl font-bold">{h.name}</div>
-              <div className="text-xs opacity-50 mt-1">技能: {h.skill}</div>
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const currentPlayer = players[0];
-
-  return (
-    <div className="h-screen bg-stone-900 text-white flex flex-col overflow-hidden font-serif relative">
-      
-      {/* AI 阵亡诗词浮层 */}
-      {deathPoem && (
-        <div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center bg-black/60 animate-in fade-in duration-500">
-          <div className="bg-red-950/90 border-y-2 border-yellow-600 py-10 px-24 transform -rotate-1 shadow-2xl">
-             <div className="flex items-center gap-3 text-yellow-500 mb-2 justify-center">
-                <ScrollText size={20}/>
-                <span className="text-xs tracking-[0.3em] uppercase">乱世悲歌</span>
-             </div>
-             <p className="text-3xl font-bold text-center italic tracking-widest text-white">{deathPoem}</p>
-          </div>
-        </div>
-      )}
-
-      {/* 顶部：敌方区域 (30% 高度) */}
-      <div className="h-[30%] flex justify-around items-center bg-black/40 border-b border-white/5 p-4 relative">
-        {players.slice(1).map((p, i) => (
-          <div 
-            key={p.id} 
-            onClick={() => onSelectTarget(p.id)}
-            className={`flex flex-col items-center p-3 rounded-2xl transition-all cursor-pointer relative w-32
-              ${turnIdx === p.id ? 'bg-red-500/10 border-2 border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.2)] scale-110 z-10' : 'border-2 border-transparent'}
-              ${p.hp <= 0 ? 'grayscale opacity-30 pointer-events-none' : ''}
-              ${isSelectingTarget ? 'animate-pulse ring-2 ring-yellow-500 bg-yellow-500/10' : ''}`}
-          >
-             <div className="w-14 h-14 bg-stone-800 rounded-full flex items-center justify-center mb-2 border-2 border-white/10 relative overflow-hidden">
-                <Cpu size={28} className={turnIdx === p.id ? 'text-red-500' : 'text-stone-500'} />
-                {turnIdx === p.id && <div className="absolute inset-0 bg-red-500/10 animate-pulse"></div>}
-             </div>
-             <div className="font-bold text-xs truncate w-full text-center">{p.name} · {p.hero.name}</div>
-             <div className="flex gap-0.5 mt-1">
-                {Array(p.maxHp).fill(0).map((_, j) => <Heart key={j} size={10} className={j < p.hp ? 'fill-red-500 text-red-500' : 'text-stone-800'} />)}
-             </div>
-             <div className="text-[10px] text-stone-500 mt-1">{p.hand.length} 张牌</div>
-             {isSelectingTarget && <Target className="absolute -top-1 -right-1 text-yellow-500 animate-spin-slow" size={20}/>}
-          </div>
-        ))}
-      </div>
-
-      {/* 中间：信息与交互区 (35% 高度) */}
-      <div className="h-[35%] p-4 flex gap-4 overflow-hidden relative">
-        {/* 战况日志 */}
-        <div className="flex-1 bg-black/30 rounded-2xl border border-white/5 p-4 overflow-y-auto no-scrollbar">
-          <div className="text-[10px] uppercase tracking-widest text-stone-600 mb-3 flex items-center gap-2 font-sans"><MessageSquare size={12}/> 实时战况</div>
-          {logs.map((log, i) => (
-            <div key={i} className={`text-xs mb-1.5 pb-1.5 border-b border-white/5 last:border-0 ${i === 0 ? 'text-red-400 font-bold' : 'text-stone-500'}`}>{log}</div>
-          ))}
-        </div>
-
-        {/* AI 军师建议 */}
-        <div className="w-64 bg-indigo-950/20 border border-indigo-500/30 rounded-2xl p-4 flex flex-col relative group">
-            <div className="flex items-center justify-between mb-3 border-b border-indigo-500/20 pb-2">
-               <div className="flex items-center gap-2 text-indigo-400">
-                  <BrainCircuit size={16}/>
-                  <span className="text-[10px] font-bold tracking-widest">军师祭酒</span>
-               </div>
-               {turnIdx === 0 && (
-                 <button onClick={getAiAdvice} disabled={isAiThinking} className="p-1 hover:bg-indigo-500/20 rounded-full transition-colors disabled:opacity-30">
-                    <RefreshCw size={14} className={isAiThinking ? "animate-spin" : ""}/>
-                 </button>
-               )}
-            </div>
-            <div className="flex-1 flex flex-col justify-center items-center">
-                {aiAdvice ? (
-                  <p className="text-xs italic text-indigo-100 text-center leading-relaxed px-2">“{aiAdvice}”</p>
-                ) : (
-                  <div className="text-center opacity-20">
-                    <ScrollText size={24} className="mx-auto mb-2"/>
-                    <p className="text-[9px]">等待献策...</p>
-                  </div>
-                )}
-            </div>
-        </div>
-
-        {/* 紧急响应模态框 */}
-        {pendingAction && pendingAction.target === 0 && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-stone-900/60 backdrop-blur-sm rounded-2xl mx-4">
-            <div className="bg-red-950/80 border-2 border-red-500 p-6 rounded-xl flex flex-col items-center shadow-2xl animate-in zoom-in duration-200">
-               <Shield size={40} className="text-red-500 mb-3 animate-pulse" />
-               <div className="text-center mb-4">
-                  <div className="text-red-500 font-bold text-lg">敌袭！</div>
-                  <div className="text-[10px] text-stone-400 mt-1 italic">面临【杀】，是否使用【闪】？</div>
-               </div>
-               <div className="flex gap-3">
-                  <button 
-                    onClick={() => { const idx = currentPlayer.hand.findIndex(c => c.key === 'shan'); if (idx !== -1) resolveFinalEffect(pendingAction, idx); }}
-                    disabled={currentPlayer.hand.findIndex(c => c.key === 'shan') === -1}
-                    className="px-6 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-30 rounded-lg text-xs font-bold transition-all shadow-lg active:scale-95"
-                  >打出闪</button>
-                  <button onClick={() => resolveFinalEffect(pendingAction)} className="px-6 py-2 bg-stone-800 hover:bg-stone-700 rounded-lg text-xs font-bold transition-all">承受</button>
-               </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 底部：玩家操作区 (35% 高度) */}
-      <div className="h-[35%] bg-stone-950/50 border-t border-white/10 flex flex-col relative">
-        
-        {/* 悬浮玩家状态栏 - 不遮挡卡牌 */}
-        <div className="absolute top-0 left-0 right-0 -translate-y-1/2 flex justify-center z-10 px-4 pointer-events-none">
-          <div className="bg-stone-900 border border-white/10 px-6 py-2 rounded-full shadow-2xl flex items-center gap-6 pointer-events-auto backdrop-blur-md">
-            <div className="flex items-center gap-3 border-r border-white/10 pr-6">
-              <div className={`p-1.5 rounded-lg ${turnIdx === 0 ? 'bg-red-600 shadow-[0_0_10px_rgba(220,38,38,0.5)]' : 'bg-stone-800'}`}>
-                <User size={16} />
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] text-stone-500 font-sans uppercase font-bold tracking-tighter">你的体力</span>
-                <div className="flex gap-0.5">
-                  {Array(currentPlayer?.maxHp || 0).fill(0).map((_, j) => <Heart key={j} size={12} className={j < currentPlayer.hp ? 'fill-red-500 text-red-500' : 'text-stone-800'} />)}
-                </div>
-              </div>
-            </div>
-
-            {turnIdx === 0 && !pendingAction && (
-              <div className="flex items-center gap-4">
-                {isSelectingTarget ? (
-                  <button onClick={() => { setIsSelectingTarget(false); setSelectedCardIdx(null); }} className="flex items-center gap-1.5 px-4 py-1.5 bg-yellow-600 hover:bg-yellow-500 rounded-lg text-[10px] font-bold transition-all animate-pulse">
-                    <XCircle size={12}/> 取消当前选择
-                  </button>
-                ) : (
-                  <div className="text-[10px] text-yellow-500 font-bold tracking-widest animate-pulse flex items-center gap-1">
-                    <ChevronRight size={12}/> 请出牌
-                  </div>
-                )}
-                <button onClick={nextTurn} className="px-5 py-1.5 bg-stone-800 hover:bg-red-900 rounded-lg text-[10px] font-bold border border-white/5 transition-all active:scale-95 shadow-lg">
-                  结束回合
-                </button>
-              </div>
-            )}
-            {turnIdx !== 0 && (
-              <div className="text-[10px] text-stone-500 font-bold animate-pulse">
-                等待对方行动...
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* 手牌展示区 */}
-        <div className="flex-1 w-full flex items-center justify-center pt-8 pb-4 px-4 overflow-x-auto no-scrollbar">
-          <div className="flex gap-2 min-w-min px-10">
-            {currentPlayer?.hand.map((card, i) => (
-              <div 
-                key={card.uid}
-                onClick={() => onCardClick(i)}
-                className={`w-28 h-40 flex-shrink-0 bg-stone-100 rounded-xl p-3 flex flex-col justify-between cursor-pointer transition-all shadow-2xl relative group
-                  ${selectedCardIdx === i ? '-translate-y-12 ring-4 ring-yellow-500 scale-110 z-20' : 'hover:-translate-y-6 hover:z-10'}
-                  ${turnIdx !== 0 || pendingAction ? 'opacity-40 grayscale pointer-events-none' : ''}`}
-                style={{ color: card.color === 'red' || card.color === 'pink' ? '#991b1b' : '#1c1917' }}
-              >
-                {/* 装饰边框 */}
-                <div className="absolute inset-1 border border-black/5 rounded-lg pointer-events-none"></div>
+            const onTargetSelect = (tIdx) => {
+                if (!isSelectingTarget || tIdx === 0 || players[tIdx].hp <= 0) return;
+                const card = players[0].hand[selectedCardIdx];
+                const action = { type: card.key, source: 0, target: tIdx };
+                setPlayers(p => { const n=[...p]; n[0].hand.splice(selectedCardIdx,1); return n; });
                 
-                <div className="flex justify-between items-start relative z-10">
-                  <span className="font-black text-2xl leading-[0.9] tracking-tighter">
-                    {card.name.split('').map((char, idx) => <span key={idx} className="block">{char}</span>)}
-                  </span>
-                  <div className="p-1.5 bg-stone-200/50 rounded-lg">
-                    {card.key === 'sha' ? <Sword size={16}/> : card.key === 'shan' ? <Shield size={16}/> : card.key === 'tao' ? <Heart size={16} className="fill-current"/> : <Zap size={16}/>}
-                  </div>
-                </div>
+                if (card.key === 'sha') {
+                    setPendingAction(action);
+                    setTimeout(() => {
+                        const shanIdx = players[tIdx].hand.findIndex(c => c.key === 'shan');
+                        resolveEffect(action, shanIdx !== -1 ? shanIdx : null);
+                    }, 800);
+                } else {
+                    resolveEffect(action);
+                }
+                setIsSelectingTarget(false);
+                setSelectedCardIdx(null);
+            };
 
-                <div className="relative z-10">
-                  <div className="text-[9px] leading-tight text-stone-600 mb-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                    {card.desc}
-                  </div>
-                  <div className="text-[8px] font-black border-t border-stone-300 pt-1 text-right italic uppercase tracking-tighter opacity-60">
-                    {card.type}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {currentPlayer?.hand.length === 0 && (
-              <div className="text-stone-700 italic text-sm py-10">手无寸铁，等待转机...</div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+            // AI 简单逻辑
+            useEffect(() => {
+                if (gameState === 'playing' && turnIdx !== 0 && !pendingAction) {
+                    const timer = setTimeout(() => {
+                        const me = players[turnIdx];
+                        if (!me || me.hp <= 0) { nextTurn(); return; }
+                        const shaIdx = me.hand.findIndex(c => c.key === 'sha');
+                        if (shaIdx !== -1) {
+                            const action = { type: 'sha', source: turnIdx, target: 0 };
+                            setPlayers(p => { const n=[...p]; n[turnIdx].hand.splice(shaIdx,1); return n; });
+                            setPendingAction(action);
+                            setTimeout(() => {
+                                const shanIdx = players[0].hand.findIndex(c => c.key === 'shan');
+                                resolveEffect(action, shanIdx !== -1 ? shanIdx : null);
+                            }, 800);
+                        } else {
+                            nextTurn();
+                        }
+                    }, 1500);
+                    return () => clearTimeout(timer);
+                }
+            }, [turnIdx, pendingAction, gameState, players]);
 
-export default App;
+            if (gameState === 'menu') {
+                return (
+                    <div className="h-screen flex flex-col items-center justify-center text-white bg-stone-950 p-6">
+                        <div className="flex items-center gap-4 mb-12">
+                            <LucideIcon name="flame" size={60} className="text-red-600 animate-pulse" />
+                            <h1 className="text-6xl font-black text-yellow-600 tracking-tighter italic">三国杀：激战</h1>
+                        </div>
+                        <div className="grid grid-cols-2 gap-6 max-w-xl w-full">
+                            {HEROES.map((h, i) => (
+                                <button key={h.id} onClick={() => startGame(i)} className={`${h.color} p-8 rounded-2xl border-2 border-white/5 hover:border-yellow-500 hover:scale-105 transition-all shadow-2xl text-left`}>
+                                    <div className="text-3xl font-bold">{h.name}</div>
+                                    <div className="text-sm opacity-60 mt-2 font-sans tracking-widest">技能：{h.skill}</div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="h-screen bg-stone-900 text-white flex flex-col overflow-hidden relative">
+                    {/* 对手区域 */}
+                    <div className="h-[30%] bg-black/40 border-b border-white/5 flex justify-around items-center p-4">
+                        {players.slice(1).map(p => (
+                            <div key={p.id} onClick={() => onTargetSelect(p.id)} className={`flex flex-col items-center p-4 rounded-3xl border-2 transition-all w-36 ${turnIdx === p.id ? 'border-red-500 bg-red-500/10 scale-110 shadow-lg' : 'border-transparent'} ${p.hp <= 0 ? 'grayscale opacity-30 pointer-events-none' : 'cursor-pointer'}`}>
+                                <div className="w-16 h-16 bg-stone-800 rounded-full flex items-center justify-center mb-2 border border-white/10 shadow-inner">
+                                    <LucideIcon name="cpu" size={32} className={turnIdx === p.id ? "text-red-500" : "text-stone-500"} />
+                                </div>
+                                <div className="font-bold text-sm tracking-widest">{p.name}</div>
+                                <div className="flex gap-1 mt-1">
+                                    {Array(p.maxHp).fill(0).map((_, i) => (
+                                        <div key={i} className={`w-2 h-2 rounded-full ${i < p.hp ? 'bg-red-600' : 'bg-stone-800'}`}></div>
+                                    ))}
+                                </div>
+                                <div className="text-[10px] text-stone-500 mt-1 uppercase font-sans tracking-tighter">Cards: {p.hand.length}</div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* 日志与反馈区域 */}
+                    <div className="h-[35%] flex gap-4 p-4">
+                        <div className="flex-1 bg-black/30 rounded-3xl border border-white/5 p-5 overflow-y-auto no-scrollbar shadow-inner">
+                            <div className="flex items-center gap-2 mb-4 opacity-40">
+                                <LucideIcon name="message-square" size={14} />
+                                <span className="text-[10px] font-bold uppercase tracking-widest">战报</span>
+                            </div>
+                            {logs.map((log, i) => (
+                                <div key={i} className={`text-sm mb-2 pb-2 border-b border-white/5 last:border-0 ${i === 0 ? 'text-red-400 font-bold' : 'text-stone-600'}`}>
+                                    {log}
+                                </div>
+                            ))}
+                        </div>
+                        <div className="w-64 bg-indigo-950/20 border border-indigo-500/20 rounded-3xl p-5 flex flex-col justify-between">
+                            <div>
+                                <div className="text-[10px] font-bold text-indigo-400 mb-3 tracking-widest flex items-center gap-2">
+                                    <LucideIcon name="scroll-text" size={14} /> 军师建议
+                                </div>
+                                <p className="text-xs italic leading-relaxed text-indigo-100/80">“兵者，诡道也。审时度势，方能百战不殆。”</p>
+                            </div>
+                            <LucideIcon name="brain-circuit" className="text-indigo-500/20 self-end" size={40} />
+                        </div>
+                    </div>
+
+                    {/* 玩家区域 */}
+                    <div className="h-[35%] bg-stone-950/80 border-t border-white/10 relative pt-12 flex flex-col">
+                        {/* 状态悬浮条 */}
+                        <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-stone-800 border border-white/10 px-6 py-2 rounded-full shadow-2xl flex items-center gap-8 backdrop-blur-md">
+                            <div className="flex items-center gap-3">
+                                <LucideIcon name="heart" size={16} className="text-red-600 fill-red-600" />
+                                <span className="text-sm font-bold tracking-widest">{players[0]?.hp} / {players[0]?.maxHp}</span>
+                            </div>
+                            {turnIdx === 0 && (
+                                <div className="flex items-center gap-4">
+                                    <span className="text-[10px] text-yellow-500 font-bold animate-pulse">请出牌</span>
+                                    <button onClick={nextTurn} className="bg-red-800 hover:bg-red-700 text-white text-[10px] font-bold px-4 py-1.5 rounded-lg transition-colors">结束回合</button>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* 手牌展示 */}
+                        <div className="flex-1 flex justify-center items-end gap-2 px-10 pb-6 overflow-x-auto no-scrollbar">
+                            {players[0]?.hand.map((card, i) => (
+                                <div 
+                                    key={card.uid} 
+                                    onClick={() => onCardClick(i)}
+                                    className={`w-28 h-40 bg-stone-100 rounded-xl p-3 flex flex-col justify-between cursor-pointer transition-all shadow-2xl flex-shrink-0 relative group
+                                    ${selectedCardIdx === i ? '-translate-y-12 ring-4 ring-yellow-500' : 'hover:-translate-y-6 hover:z-10'}
+                                    ${turnIdx !== 0 ? 'opacity-50 grayscale' : ''}`}
+                                >
+                                    <div className="text-stone-900">
+                                        <div className="font-black text-2xl leading-none">{card.name}</div>
+                                        <div className="text-[9px] mt-1 opacity-60 font-sans">{card.type}</div>
+                                    </div>
+                                    <div className="flex justify-between items-end">
+                                        <LucideIcon name={card.icon} size={20} className="text-stone-400" />
+                                        <div className="text-[10px] text-stone-300 font-sans font-bold"># {i+1}</div>
+                                    </div>
+                                    {/* 描述悬浮层 */}
+                                    <div className="absolute inset-0 bg-black/80 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity p-3 flex items-center justify-center text-center">
+                                        <p className="text-[10px] text-white leading-relaxed">{card.desc}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    {/* 被攻击时的弹窗 */}
+                    {pendingAction && pendingAction.target === 0 && (
+                        <div className="absolute inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center">
+                            <div className="bg-stone-900 border-2 border-red-500 p-8 rounded-3xl shadow-2xl text-center max-w-sm">
+                                <LucideIcon name="shield-alert" size={48} className="text-red-500 mx-auto mb-4 animate-bounce" />
+                                <h2 className="text-xl font-bold mb-2">敌军突袭！</h2>
+                                <p className="text-xs text-stone-400 mb-6">对手向你出【杀】，是否使用【闪】抵挡？</p>
+                                <div className="flex gap-4">
+                                    <button 
+                                        onClick={() => {
+                                            const sIdx = players[0].hand.findIndex(c => c.key === 'shan');
+                                            if (sIdx !== -1) resolveEffect(pendingAction, sIdx);
+                                        }}
+                                        disabled={players[0].hand.findIndex(c => c.key === 'shan') === -1}
+                                        className="flex-1 bg-blue-700 hover:bg-blue-600 disabled:opacity-30 py-3 rounded-xl font-bold text-sm"
+                                    >打出闪</button>
+                                    <button onClick={() => resolveEffect(pendingAction)} className="flex-1 bg-stone-700 hover:bg-stone-600 py-3 rounded-xl font-bold text-sm">强行承受</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
